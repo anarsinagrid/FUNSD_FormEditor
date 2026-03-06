@@ -18,6 +18,7 @@ To avoid future issues and download LFS files properly, follow these steps stric
 
    ```bash
    GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/anarsinagrid/FUNSD_FormEditor.git
+
    cd FUNSD_FormEditor
    ```
 
@@ -79,7 +80,11 @@ python -m editor.main
 
 ## Code Reproducibility: Running Evaluations
 
-To replicate the evaluation scores for the OCR engines or the LayoutLM representations, you can run the provided scripts in the `LayoutLM` directory. Note that not all model checkpoints are included in this repository to save space.
+To replicate the evaluation scores for the OCR engines or the LayoutLM representations, you can run the provided scripts in the `LayoutLM` directory.
+
+> **Important:** The trained model checkpoints are **not available on GitHub** to save repository space. You will need to train the models yourself to generate these checkpoints before you can run the LayoutLM evaluations.
+>
+> If you simply want to view the detailed metric results without running the code, full JSON reports are available directly in the [`LayoutLM/eval_results/`](LayoutLM/eval_results/) directory.
 
 ### 1. OCR Evaluation
 

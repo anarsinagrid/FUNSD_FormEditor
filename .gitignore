@@ -1,0 +1,46 @@
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+.vscode
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Virtual environment ───────────────────────────────────────────────────────
+sm/
+
+# ── Hugging Face cache ────────────────────────────────────────────────────────
+.hf_cache/
+
+# ── Internal / scratch ────────────────────────────────────────────────────────
+LayoutLM/graph_linking/
+eval.json
+eval.md
+funsd-analyse-dataset (1).ipynb
+ocr_eval_report_*.json
+
+# ── Model checkpoints (excluded from repo — too large or not needed) ──────────
+# All fine-tuned model directories (not needed for the editor).
+LayoutLM/layoutlmv3-funsd-paddle/
+LayoutLM/layoutlmv3-funsd-tesseract/
+LayoutLM/layoutlmv3-funsd-doctr/
+LayoutLM/layoutlmv3-funsd-doctr-base/
+LayoutLM/layoutlmv3-funsd-doctr-large/
+LayoutLM/layoutlmv3-funsd-zero-bbox/
+LayoutLM/docformer-*/
+UDOP/udop-funsd/
+
+# GT-bbox checkpoints: keep only checkpoint-608, exclude the rest.
+LayoutLM/layoutlmv3-funsd/checkpoint-*/
+!LayoutLM/layoutlmv3-funsd/checkpoint-608/
+!LayoutLM/layoutlmv3-funsd/checkpoint-608/**
+
+
+# ── Training-only artifacts (not needed for inference) ────────────────────────
+# Must come AFTER the negation rules above so they re-apply to un-ignored dirs.
+**/optimizer.pt
+**/rng_state.pth
+**/scheduler.pt
+**/trainer_state.json
+**/training_args.bin

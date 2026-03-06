@@ -1,0 +1,22 @@
+{
+  "paddle-v4": {
+    "cer": 0.294,
+    "wer": 0.55,
+    "word_recall": 0.2177,
+    "over_segmentation": 0.0,
+    "under_segmentation": 0.0001,
+    "order_consistency": 0.9961,
+    "mean_iou": 0.4958,
+    "median_iou": 0.4594,
+    "pct_iou_above_0.7": 0.2355,
+    "total_documents": 199,
+    "total_gt_words": 30595,
+    "total_ocr_words": 10158,
+    "ocr_to_gt_ratio": 0.332,
+    "mean_ocr_words_per_doc": 51.05,
+    "median_ocr_words_per_doc": 44,
+    "mean_gt_words_per_doc": 153.74,
+    "total_matched_words": 6662,
+    "total_missed_words": 23933
+  }
+}

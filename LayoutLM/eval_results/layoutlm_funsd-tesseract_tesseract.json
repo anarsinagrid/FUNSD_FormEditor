@@ -1,0 +1,31 @@
+{
+  "model_dir": "layoutlmv3-funsd-tesseract",
+  "ocr_engine": "tesseract",
+  "checkpoint": "layoutlmv3-funsd-tesseract/checkpoint-1064",
+  "overall": {
+    "precision": 0.652,
+    "recall": 0.657,
+    "f1": 0.6545,
+    "accuracy": 0.736
+  },
+  "per_class": {
+    "ANSWER": {
+      "precision": 0.648,
+      "recall": 0.6722,
+      "f1": 0.6599,
+      "number": 723
+    },
+    "HEADER": {
+      "precision": 0.5545,
+      "recall": 0.5545,
+      "f1": 0.5545,
+      "number": 110
+    },
+    "QUESTION": {
+      "precision": 0.6682,
+      "recall": 0.6574,
+      "f1": 0.6628,
+      "number": 861
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "model_dir": "layoutlmv3-funsd",
+  "ocr_engine": "paddle",
+  "checkpoint": "layoutlmv3-funsd/checkpoint-646",
+  "overall": {
+    "precision": 0.6033,
+    "recall": 0.7319,
+    "f1": 0.6614,
+    "accuracy": 0.564
+  },
+  "per_class": {
+    "ANSWER": {
+      "precision": 0.5774,
+      "recall": 0.7481,
+      "f1": 0.6518,
+      "number": 643
+    },
+    "HEADER": {
+      "precision": 0.4691,
+      "recall": 0.6441,
+      "f1": 0.5429,
+      "number": 118
+    },
+    "QUESTION": {
+      "precision": 0.6523,
+      "recall": 0.7319,
+      "f1": 0.6898,
+      "number": 787
+    }
+  }
+}

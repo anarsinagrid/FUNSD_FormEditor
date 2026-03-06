@@ -1,0 +1,13 @@
+# Core ML / NLP
+torch
+transformers
+
+# OCR backends
+python-doctr[torch]
+
+# Vision / image processing
+Pillow
+opencv-python-headless  
+
+# UI
+PySide6

@@ -463,6 +463,8 @@ def train(
     gradient_checkpointing=True,
     init_checkpoint=None,
     min_label_iou=_MIN_LABEL_IOU,
+    target_size=512,
+    output_suffix=None,
 ):
     if not cache_dir:
         raise ValueError("cache_dir is required. Pass --cache_dir /absolute/path/to/hf_cache")
@@ -496,10 +498,13 @@ def train(
         model_id = "microsoft/layoutlmv3-large" if model_size == "large" else "microsoft/layoutlmv3-base"
         base_checkpoint = init_checkpoint if init_checkpoint else model_id
         processor = LayoutLMv3Processor.from_pretrained(model_id, apply_ocr=False, cache_dir=cache_dir)
-    # Use aspect-ratio-preserving resize: the long side is scaled to 512,
+    TARGET_SIZE = int(target_size)
+    if TARGET_SIZE <= 0 or TARGET_SIZE % 16 != 0:
+        raise ValueError(f"target_size must be a positive multiple of 16, got {TARGET_SIZE}")
+
+    # Use aspect-ratio-preserving resize: the long side is scaled to TARGET_SIZE,
     # the short side is padded with white to keep the spatial layout intact.
-    # Square stretching (512×512) distorts portrait FUNSD images and hurts geometry.
-    TARGET_SIZE = 512
+    # Square stretching distorts portrait FUNSD images and hurts geometry.
     processor.image_processor.size = {"height": TARGET_SIZE, "width": TARGET_SIZE}
     processor.image_processor.do_resize = True
     processor.image_processor.do_pad = True
@@ -623,12 +628,13 @@ def train(
         except Exception as e:
             print(f"Gradient checkpointing not enabled: {e}")
     
-    # Interpolate for 512x512
+    # Interpolate for target resolution
     if arch == "layoutlmv3":
-        interpolate_pos_encoding(model, 512, 512)
-        model.config.input_size = 512
+        interpolate_pos_encoding(model, TARGET_SIZE, TARGET_SIZE)
+        model.config.input_size = TARGET_SIZE
         if hasattr(model, "layoutlmv3") and hasattr(model.layoutlmv3, "init_visual_bbox"):
-            model.layoutlmv3.init_visual_bbox(image_size=(512 // 16, 512 // 16))
+            grid = TARGET_SIZE // 16
+            model.layoutlmv3.init_visual_bbox(image_size=(grid, grid))
 
     # Save the custom property so inference knows
     model.config.ocr_engine = ocr_engine
@@ -637,6 +643,8 @@ def train(
     metric = evaluate.load("seqeval")
     
     run_tag = "adapted" if init_checkpoint else model_size
+    if output_suffix:
+        run_tag = f"{run_tag}-{output_suffix}"
     model_prefix = "docformer" if arch == "docformer" else "layoutlmv3"
     output_directory = f"./{model_prefix}-funsd-{ocr_engine}-{run_tag}"
 
@@ -664,13 +672,12 @@ def train(
         gradient_accumulation_steps=4,
     )
 
-    trainer = CustomTrainer(
+    trainer_kwargs = dict(
         class_weights=class_weights,
         model=model,
         args=training_args,
         train_dataset=encoded_train,
         eval_dataset=encoded_test,
-        tokenizer=processor,
         compute_metrics=lambda p: compute_metrics(p, label_list, metric),
         optimizers=(optimizer, None),
         callbacks=[
@@ -684,6 +691,15 @@ def train(
             ),
         ],
     )
+
+    # transformers API compatibility:
+    # older versions accept `tokenizer`, newer versions expect `processing_class`.
+    try:
+        trainer = CustomTrainer(tokenizer=processor, **trainer_kwargs)
+    except TypeError as e:
+        if "unexpected keyword argument 'tokenizer'" not in str(e):
+            raise
+        trainer = CustomTrainer(processing_class=processor, **trainer_kwargs)
 
     trainer.train()
 
@@ -864,6 +880,8 @@ if __name__ == "__main__":
     parser.add_argument("--disable_gradient_checkpointing", action="store_true", help="Disable gradient checkpointing")
     parser.add_argument("--init_checkpoint", type=str, default=None, help="Warm-start from an existing checkpoint (e.g., layoutlmv3-funsd/checkpoint-646)")
     parser.add_argument("--min_label_iou", type=float, default=_MIN_LABEL_IOU, help="Minimum IoU for assigning GT label to OCR box")
+    parser.add_argument("--target_size", type=int, default=512, help="Square image size used for LayoutLM visual input (must be multiple of 16)")
+    parser.add_argument("--output_suffix", type=str, default=None, help="Optional suffix appended to run tag to avoid output directory collisions")
     args = parser.parse_args()
 
     train(
@@ -878,4 +896,6 @@ if __name__ == "__main__":
         gradient_checkpointing=not args.disable_gradient_checkpointing,
         init_checkpoint=args.init_checkpoint,
         min_label_iou=args.min_label_iou,
+        target_size=args.target_size,
+        output_suffix=args.output_suffix,
     )

@@ -1,5 +1,6 @@
 # Core ML / NLP
 torch
+torch-geometric
 transformers
 
 # OCR backends

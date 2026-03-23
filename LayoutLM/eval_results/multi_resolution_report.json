@@ -1,0 +1,102 @@
+{
+  "metadata": {
+    "timestamp_utc": "2026-03-16T15:50:00.162196Z",
+    "device": "mps",
+    "cache_dir": "/Users/anarsina/Documents/Projects/formGeneration/.hf_cache",
+    "resolutions": [
+      224,
+      384,
+      512
+    ],
+    "confidence_threshold": 0.7,
+    "limit": null,
+    "dataset": "nielsr/funsd",
+    "split_for_eval": "test",
+    "ocr_engine": "doctr",
+    "latency_scope": "end_to_end_excluding_model_load"
+  },
+  "checkpoints": {
+    "224": {
+      "model_dir": "layoutlmv3-funsd-doctr-base-res224",
+      "checkpoint": "layoutlmv3-funsd-doctr-base-res224/checkpoint-684",
+      "best_metric": 0.6892382103990328
+    },
+    "384": {
+      "model_dir": "layoutlmv3-funsd-doctr-large",
+      "checkpoint": "layoutlmv3-funsd-doctr-large/checkpoint-794",
+      "best_metric": 0.7284190106692531
+    },
+    "512": {
+      "model_dir": "layoutlmv3-funsd-doctr-base",
+      "checkpoint": "layoutlmv3-funsd-doctr-base/checkpoint-670",
+      "best_metric": 0.6864282214600687
+    }
+  },
+  "complexity_calibration": {
+    "p90_count": 232.0,
+    "p90_density": 0.16711820000000002,
+    "q33": 0.5118299041822102,
+    "q66": 0.7335671112236521
+  },
+  "fixed_resolution_benchmark": {
+    "224": {
+      "metrics": {
+        "precision": 0.6653,
+        "recall": 0.7119,
+        "f1": 0.6878,
+        "accuracy": 0.7662
+      },
+      "avg_latency_ms": 339.206,
+      "docs": 50
+    },
+    "384": {
+      "metrics": {
+        "precision": 0.698,
+        "recall": 0.7204,
+        "f1": 0.709,
+        "accuracy": 0.7758
+      },
+      "avg_latency_ms": 686.386,
+      "docs": 50
+    },
+    "512": {
+      "metrics": {
+        "precision": 0.6732,
+        "recall": 0.7009,
+        "f1": 0.6868,
+        "accuracy": 0.7648
+      },
+      "avg_latency_ms": 548.55,
+      "docs": 50
+    }
+  },
+  "adaptive_eval": {
+    "metrics": {
+      "precision": 0.6772,
+      "recall": 0.7044,
+      "f1": 0.6905,
+      "accuracy": 0.7606
+    },
+    "avg_latency_ms": 503.646,
+    "resolution_counts": {
+      "224": 16,
+      "384": 8,
+      "512": 26
+    },
+    "docs": 50,
+    "speedup_vs_high_res_pct": 8.19
+  },
+  "cascade_eval": {
+    "metrics": {
+      "precision": 0.6653,
+      "recall": 0.7119,
+      "f1": 0.6878,
+      "accuracy": 0.7662
+    },
+    "avg_latency_ms": 339.206,
+    "escalation_rate": 0.0,
+    "threshold": 0.7,
+    "docs": 50,
+    "speedup_vs_high_res_pct": 38.16
+  }
+}

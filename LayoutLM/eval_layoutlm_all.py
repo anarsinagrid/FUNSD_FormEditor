@@ -104,6 +104,7 @@ ALL_PAIRS = [
     ("layoutlmv3-funsd-doctr",         "doctr"),
     ("layoutlmv3-funsd-doctr-large",   "doctr"),
     ("layoutlmv3-funsd-doctr-adapted", "doctr"),
+    ("layoutlmv3-funsd-doctr-layoutgraph", "doctr"),
     ("layoutlmv3-funsd-paddle",        "paddle"),
     ("layoutlmv3-funsd-tesseract",     "tesseract"),
     ("docformer-funsd-doctr-base",     "doctr"),
@@ -224,6 +225,24 @@ def evaluate_pair(
         checkpoint, ocr_engine, overall (seqeval), per_class,
         timing, total_docs, total_ocr_words, total_gt_words
     """
+    if "layoutgraph" in model_dir:
+        try:
+            from layout_graph_pipeline import evaluate_layoutgraph_pair
+        except Exception as e:
+            raise RuntimeError(
+                "Failed to import layout_graph_pipeline for layoutgraph evaluation. "
+                "Ensure torch-geometric and layout_graph_pipeline dependencies are installed."
+            ) from e
+
+        return evaluate_layoutgraph_pair(
+            model_dir=model_dir,
+            ocr_engine=ocr_engine,
+            dataset=dataset,
+            cache_dir=cache_dir,
+            limit=limit,
+            device=device,
+        )
+
     if device is None:
         device = torch.device(
             "mps"  if torch.backends.mps.is_available() else

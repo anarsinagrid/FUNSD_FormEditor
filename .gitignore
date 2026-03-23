@@ -6,6 +6,7 @@
 __pycache__/
 *.pyc
 *.pyo
+pyrightconfig.json
 
 # ── Virtual environment ───────────────────────────────────────────────────────
 sm/
@@ -19,17 +20,24 @@ eval.json
 eval.md
 funsd-analyse-dataset (1).ipynb
 ocr_eval_report_*.json
+LayoutLM/onnx_artifacts/
+LayoutLM/domain_generalization_artifacts/
 
 # ── Model checkpoints (excluded from repo — too large or not needed) ──────────
 # All fine-tuned model directories (not needed for the editor).
 LayoutLM/layoutlmv3-funsd-paddle/
 LayoutLM/layoutlmv3-funsd-tesseract/
 LayoutLM/layoutlmv3-funsd-doctr/
+LayoutLM/layoutlmv3-funsd-doctr-res*/
+LayoutLM/layoutlmv3-funsd-doctr-base-res*/
 LayoutLM/layoutlmv3-funsd-doctr-base/
 LayoutLM/layoutlmv3-funsd-doctr-large/
+LayoutLM/layoutlmv3-funsd-doctr-layoutgraph*/
 LayoutLM/layoutlmv3-funsd-zero-bbox/
 LayoutLM/docformer-*/
 UDOP/udop-funsd/
+LayoutLM/layout_graph_artifacts/
+LayoutLM/onnx_artifacts_gt
 
 # GT-bbox checkpoints: keep only checkpoint-608, exclude the rest.
 LayoutLM/layoutlmv3-funsd/checkpoint-*/

@@ -34,6 +34,17 @@ ocr_eval_report_*.json
 LayoutLM/onnx_artifacts/
 LayoutLM/domain_generalization_artifacts/
 
+# Whitelist: Allow benchmark reports and technical evidence
+!LayoutLM/eval_results/*.json
+!LayoutLM/*_artifacts/*.json
+!LayoutLM/*_artifacts/*.md
+
+DESIGN_DECISIONS.md
+EVALUATION_STATUS.md
+REPRODUCIBILITY_GUIDE.md
+RESULTS_INTERPRETATION.md
+Project3_Grading_Report_COMPLETE.md
+
 # ── Model checkpoints (excluded from repo) ───────────────────────────────────
 # Ignore ALL checkpoint subfolders globally first.
 **/checkpoint-*/

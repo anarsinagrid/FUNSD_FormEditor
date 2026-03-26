@@ -1,0 +1,265 @@
+{
+  "status": "ok",
+  "timestamp_utc": "2026-03-26T10:47:12.575601Z",
+  "dataset": "nielsr/funsd",
+  "split": "test",
+  "ocr_source": "service",
+  "seqeval_backend": "evaluate/seqeval",
+  "checkpoint_dir": "default_service_checkpoint",
+  "overall_seqeval": {
+    "precision": 0.655784,
+    "recall": 0.662582,
+    "f1": 0.659165,
+    "accuracy": 0.789197
+  },
+  "counts": {
+    "docs_evaluated": 30,
+    "tokens_total": 4573,
+    "entity_tokens_total": 3309,
+    "flagged_low_conf_entity_tokens": 358,
+    "low_conf_threshold": 0.6
+  },
+  "calibration": {
+    "bins": [
+      {
+        "low": 0.1,
+        "high": 0.2,
+        "count": 7,
+        "avg_confidence": 0.165813,
+        "empirical_accuracy": 0.142857,
+        "gap": -0.022956
+      },
+      {
+        "low": 0.2,
+        "high": 0.3,
+        "count": 18,
+        "avg_confidence": 0.258438,
+        "empirical_accuracy": 0.388889,
+        "gap": 0.130451
+      },
+      {
+        "low": 0.3,
+        "high": 0.4,
+        "count": 43,
+        "avg_confidence": 0.355235,
+        "empirical_accuracy": 0.209302,
+        "gap": -0.145933
+      },
+      {
+        "low": 0.4,
+        "high": 0.5,
+        "count": 97,
+        "avg_confidence": 0.462746,
+        "empirical_accuracy": 0.42268,
+        "gap": -0.040065
+      },
+      {
+        "low": 0.5,
+        "high": 0.6,
+        "count": 193,
+        "avg_confidence": 0.548599,
+        "empirical_accuracy": 0.528497,
+        "gap": -0.020102
+      },
+      {
+        "low": 0.6,
+        "high": 0.7,
+        "count": 225,
+        "avg_confidence": 0.653261,
+        "empirical_accuracy": 0.528889,
+        "gap": -0.124372
+      },
+      {
+        "low": 0.7,
+        "high": 0.8,
+        "count": 271,
+        "avg_confidence": 0.749546,
+        "empirical_accuracy": 0.571956,
+        "gap": -0.17759
+      },
+      {
+        "low": 0.8,
+        "high": 0.9,
+        "count": 389,
+        "avg_confidence": 0.855589,
+        "empirical_accuracy": 0.673522,
+        "gap": -0.182067
+      },
+      {
+        "low": 0.9,
+        "high": 1.0,
+        "count": 2066,
+        "avg_confidence": 0.973258,
+        "empirical_accuracy": 0.798161,
+        "gap": -0.175098
+      }
+    ],
+    "ece": 0.15873,
+    "brier": 0.214285
+  },
+  "confidence_accuracy_curve": [
+    {
+      "threshold": 0.0,
+      "coverage": 1.0,
+      "accuracy": 0.708673,
+      "kept_entities": 3309,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.05,
+      "coverage": 1.0,
+      "accuracy": 0.708673,
+      "kept_entities": 3309,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.1,
+      "coverage": 1.0,
+      "accuracy": 0.708673,
+      "kept_entities": 3309,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.15,
+      "coverage": 0.999396,
+      "accuracy": 0.709102,
+      "kept_entities": 3307,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.2,
+      "coverage": 0.997885,
+      "accuracy": 0.709873,
+      "kept_entities": 3302,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.25,
+      "coverage": 0.995769,
+      "accuracy": 0.710167,
+      "kept_entities": 3295,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.3,
+      "coverage": 0.992445,
+      "accuracy": 0.711632,
+      "kept_entities": 3284,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.35,
+      "coverage": 0.98761,
+      "accuracy": 0.714198,
+      "kept_entities": 3268,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.4,
+      "coverage": 0.97945,
+      "accuracy": 0.718297,
+      "kept_entities": 3241,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.45,
+      "coverage": 0.970384,
+      "accuracy": 0.721582,
+      "kept_entities": 3211,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.5,
+      "coverage": 0.950136,
+      "accuracy": 0.727417,
+      "kept_entities": 3144,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.55,
+      "coverage": 0.918707,
+      "accuracy": 0.733882,
+      "kept_entities": 3040,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.6,
+      "coverage": 0.89181,
+      "accuracy": 0.740427,
+      "kept_entities": 2951,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.65,
+      "coverage": 0.860985,
+      "accuracy": 0.747631,
+      "kept_entities": 2849,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.7,
+      "coverage": 0.823814,
+      "accuracy": 0.757887,
+      "kept_entities": 2726,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.75,
+      "coverage": 0.780598,
+      "accuracy": 0.771971,
+      "kept_entities": 2583,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.8,
+      "coverage": 0.741916,
+      "accuracy": 0.778411,
+      "kept_entities": 2455,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.85,
+      "coverage": 0.692052,
+      "accuracy": 0.792576,
+      "kept_entities": 2290,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.9,
+      "coverage": 0.624358,
+      "accuracy": 0.798161,
+      "kept_entities": 2066,
+      "total_entities": 3309
+    },
+    {
+      "threshold": 0.95,
+      "coverage": 0.507102,
+      "accuracy": 0.816448,
+      "kept_entities": 1678,
+      "total_entities": 3309
+    }
+  ],
+  "entity_type_ocr_sensitivity": {
+    "question": {
+      "high_ocr_count": 1046,
+      "low_ocr_count": 77,
+      "high_ocr_accuracy": 0.857553,
+      "low_ocr_accuracy": 0.701299,
+      "degradation": 0.156254
+    },
+    "answer": {
+      "high_ocr_count": 1586,
+      "low_ocr_count": 86,
+      "high_ocr_accuracy": 0.77995,
+      "low_ocr_accuracy": 0.523256,
+      "degradation": 0.256694
+    },
+    "header": {
+      "high_ocr_count": 185,
+      "low_ocr_count": 10,
+      "high_ocr_accuracy": 0.567568,
+      "low_ocr_accuracy": 0.7,
+      "degradation": -0.132432
+    }
+  }
+}

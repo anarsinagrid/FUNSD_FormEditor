@@ -2,6 +2,9 @@
 torch
 torch-geometric
 transformers
+datasets
+evaluate
+seqeval
 
 # OCR backends
 python-doctr[torch]

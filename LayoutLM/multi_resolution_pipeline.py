@@ -131,7 +131,7 @@ def _discover_resolution_models(layoutlm_dir: str, resolutions):
     chosen = {}
 
     for name in sorted(os.listdir(layoutlm_dir)):
-        if not name.startswith("layoutlmv3-funsd-doctr"):
+        if not name.startswith("layoutlmv3-funsd-doctr") or "-large" in name:
             continue
         model_dir = os.path.join(layoutlm_dir, name)
         if not os.path.isdir(model_dir):
@@ -244,6 +244,10 @@ def _compute_complexity_calibration(train_split):
     return {
         "p90_count": p90_count,
         "p90_density": p90_density,
+        "min_count": int(np.min(counts)) if counts else 0,
+        "max_count": int(np.max(counts)) if counts else 0,
+        "min_density": float(np.min(densities)) if densities else 0.0,
+        "max_density": float(np.max(densities)) if densities else 0.0,
         "q33": q33,
         "q66": q66,
     }
@@ -499,7 +503,7 @@ def _evaluate(dataset, loaded_models, calib, confidence_threshold: float, limit:
     return fixed_report, adaptive_report, cascade_report
 
 
-def _print_summary(fixed_report, adaptive_report, cascade_report):
+def _print_summary(fixed_report, adaptive_report, cascade_report, calib):
     print("\n=== Fixed Resolution Benchmark ===")
     print("resolution | f1     | latency_ms")
     print("----------------------------------")
@@ -510,7 +514,11 @@ def _print_summary(fixed_report, adaptive_report, cascade_report):
 
     print("\n=== Adaptive Selector ===")
     print(
-        f"f1={adaptive_report['metrics']['f1']:.4f} "
+        f"Calibration Stats (Train): count=[{calib['min_count']}, {calib['max_count']}] "
+        f"density=[{calib['min_density']:.4f}, {calib['max_density']:.4f}]"
+    )
+    print(
+        f"Evals: f1={adaptive_report['metrics']['f1']:.4f} "
         f"latency_ms={adaptive_report['avg_latency_ms']:.2f} "
         f"counts={adaptive_report['resolution_counts']}"
     )
@@ -575,7 +583,7 @@ def main():
         limit=args.limit,
     )
 
-    _print_summary(fixed_report, adaptive_report, cascade_report)
+    _print_summary(fixed_report, adaptive_report, cascade_report, calibration)
 
     report = {
         "metadata": {

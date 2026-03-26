@@ -17,6 +17,12 @@ from transformers import (
     EarlyStoppingCallback,
     TrainerCallback,
 )
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+try:
+    from custom_models import ConfidenceAwareLayoutLMv3ForTokenClassification
+except ImportError:
+    pass
 # Optional DocFormer imports (only needed when arch=docformer)
 try:
     from transformers import DocFormerProcessor, DocFormerForTokenClassification
@@ -465,6 +471,7 @@ def train(
     min_label_iou=_MIN_LABEL_IOU,
     target_size=512,
     output_suffix=None,
+    use_ocr_confidence=False,
 ):
     if not cache_dir:
         raise ValueError("cache_dir is required. Pass --cache_dir /absolute/path/to/hf_cache")
@@ -508,7 +515,7 @@ def train(
     processor.image_processor.size = {"height": TARGET_SIZE, "width": TARGET_SIZE}
     processor.image_processor.do_resize = True
     processor.image_processor.do_pad = True
-    backend = OCRBackend(engine=ocr_engine)
+    backend = OCRBackend(engine=ocr_engine) if ocr_engine != "gt" else None
     
     # 3.2 Dataset Encoder Map function
     # Counter for silent truncation monitoring — logged at encode time.
@@ -535,22 +542,33 @@ def train(
 
     def encode_custom_ocr(example):
         image = example["image"].convert("RGB")
-        # Run OCR on the original image (boxes are normalised against original dims)
-        words, boxes_1000, _, _ = backend.run(image)
-
-        # Skip entirely empty OCR outputs — padding with dummy tokens adds noise
-        if not words:
-            words = [""]
-            boxes_1000 = [[0, 0, 0, 0]]
-
-        # Align ground truth labels geometrically to the newly OCR'd boxes.
-        # Uses dedup + IoU >= _MIN_LABEL_IOU threshold.
-        gt_boxes = example["bboxes"]
-        gt_words = example["words"]
-        gt_labels = example["ner_tags"]
-        aligned_labels = align_ocr_to_ground_truth(
-            words, boxes_1000, gt_words, gt_boxes, gt_labels, label2id.get("O", 0)
-        )
+        
+        if ocr_engine == "gt":
+            words = example["words"]
+            boxes_1000 = example["bboxes"]
+            confidences = [1.0] * max(len(words), 1)
+            if not words:
+                words = [""]
+                boxes_1000 = [[0, 0, 0, 0]]
+            aligned_labels = example["ner_tags"]
+        else:
+            # Run OCR on the original image (boxes are normalised against original dims)
+            words, boxes_1000, confidences, _ = backend.run(image)
+    
+            # Skip entirely empty OCR outputs — padding with dummy tokens adds noise
+            if not words:
+                words = [""]
+                boxes_1000 = [[0, 0, 0, 0]]
+                confidences = [0.0]
+    
+            # Align ground truth labels geometrically to the newly OCR'd boxes.
+            # Uses dedup + IoU >= _MIN_LABEL_IOU threshold.
+            gt_boxes = example["bboxes"]
+            gt_words = example["words"]
+            gt_labels = example["ner_tags"]
+            aligned_labels = align_ocr_to_ground_truth(
+                words, boxes_1000, gt_words, gt_boxes, gt_labels, label2id.get("O", 0)
+            )
 
         # Feed the aspect-ratio-preserved image to the processor so the visual
         # patches align with the (undistorted) spatial layout of the text.
@@ -569,6 +587,17 @@ def train(
             max_length=512,
             return_tensors="pt",
         )
+
+        # Create token-level confidences
+        word_ids = encoding.word_ids(batch_index=0)
+        token_confidences = []
+        for word_id in word_ids:
+            if word_id is None:
+                token_confidences.append(0.0)
+            else:
+                token_confidences.append(confidences[word_id])
+        
+        encoding["ocr_confidence"] = torch.tensor([token_confidences], dtype=torch.float32)  # Add batch dimension since return_tensors="pt" adds it
 
         # Truncation monitor: warn if any doc fills the full context window.
         if encoding["input_ids"].shape[-1] == 512 and encoding["input_ids"][0, -1] != 1:
@@ -612,7 +641,8 @@ def train(
             cache_dir=cache_dir,
         ).to(device)
     else:
-        model = LayoutLMv3ForTokenClassification.from_pretrained(
+        model_cls = ConfidenceAwareLayoutLMv3ForTokenClassification if use_ocr_confidence else LayoutLMv3ForTokenClassification
+        model = model_cls.from_pretrained(
             base_checkpoint,
             ignore_mismatched_sizes=True,
             num_labels=len(label_list),
@@ -620,6 +650,9 @@ def train(
             label2id=label2id,
             cache_dir=cache_dir,
         ).to(device)
+        if use_ocr_confidence:
+            model.config.use_ocr_confidence = True
+
 
     if gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
         try:

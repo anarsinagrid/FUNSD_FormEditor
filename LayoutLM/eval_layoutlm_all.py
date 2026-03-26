@@ -100,14 +100,6 @@ DEFAULT_CACHE_DIR = os.getenv("HF_CACHE_DIR") or os.path.join(REPO_ROOT, ".hf_ca
 # (model_dir_name, ocr_engine_or_"gt")
 # "gt" = pass ground-truth words + bboxes directly (no OCR)
 ALL_PAIRS = [
-    # ---- Native-OCR pairs ----
-    ("layoutlmv3-funsd-doctr",         "doctr"),
-    ("layoutlmv3-funsd-doctr-large",   "doctr"),
-    ("layoutlmv3-funsd-doctr-adapted", "doctr"),
-    ("layoutlmv3-funsd-doctr-layoutgraph", "doctr"),
-    ("layoutlmv3-funsd-paddle",        "paddle"),
-    ("layoutlmv3-funsd-tesseract",     "tesseract"),
-    ("docformer-funsd-doctr-base",     "doctr"),
     # ---- GT-bbox model vs all OCRs ----
     ("layoutlmv3-funsd",               "tesseract"),
     ("layoutlmv3-funsd",               "paddle"),

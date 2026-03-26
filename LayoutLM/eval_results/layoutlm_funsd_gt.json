@@ -1,30 +1,30 @@
 {
   "model_dir": "layoutlmv3-funsd",
   "ocr_engine": "gt",
-  "checkpoint": "layoutlmv3-funsd/checkpoint-646",
+  "checkpoint": "layoutlmv3-funsd/checkpoint-1102",
   "overall": {
-    "precision": 0.7844,
-    "recall": 0.8353,
-    "f1": 0.809,
-    "accuracy": 0.829
+    "precision": 0.7856,
+    "recall": 0.8099,
+    "f1": 0.7976,
+    "accuracy": 0.8145
   },
   "per_class": {
     "ANSWER": {
-      "precision": 0.7633,
-      "recall": 0.8534,
-      "f1": 0.8059,
+      "precision": 0.7637,
+      "recall": 0.8311,
+      "f1": 0.796,
       "number": 805
     },
     "HEADER": {
-      "precision": 0.4861,
-      "recall": 0.5882,
-      "f1": 0.5323,
+      "precision": 0.5447,
+      "recall": 0.563,
+      "f1": 0.5537,
       "number": 119
     },
     "QUESTION": {
-      "precision": 0.843,
-      "recall": 0.8494,
-      "f1": 0.8462,
+      "precision": 0.8329,
+      "recall": 0.8217,
+      "f1": 0.8273,
       "number": 1049
     }
   }

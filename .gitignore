@@ -8,6 +8,17 @@ __pycache__/
 *.pyo
 pyrightconfig.json
 
+# ── Index-heavy directories / extensions ──────────────────────────────────────
+models/
+onnx_artifacts/
+outputs/
+logs/
+dataset/
+*.pt
+*.bin
+*.onnx
+*.json
+
 # ── Virtual environment ───────────────────────────────────────────────────────
 sm/
 
@@ -23,27 +34,38 @@ ocr_eval_report_*.json
 LayoutLM/onnx_artifacts/
 LayoutLM/domain_generalization_artifacts/
 
-# ── Model checkpoints (excluded from repo — too large or not needed) ──────────
-# All fine-tuned model directories (not needed for the editor).
+# ── Model checkpoints (excluded from repo) ───────────────────────────────────
+# Ignore ALL checkpoint subfolders globally first.
+**/checkpoint-*/
+
+# Unignore ONLY the specific production-ready checkpoints used for inference.
+# 1. Main GT-baseline model (Editor Default)
+!LayoutLM/layoutlmv3-funsd/checkpoint-608/
+!LayoutLM/layoutlmv3-funsd/checkpoint-608/**
+
+# NOTE: If you wish to maintain the 79% F1 results from the optimized pipeline, 
+# you would also need checkpoint-1250. Currently ignored to keep repo small.
+
+# Exclude entire experiment/archive directories.
 LayoutLM/layoutlmv3-funsd-paddle/
 LayoutLM/layoutlmv3-funsd-tesseract/
-LayoutLM/layoutlmv3-funsd-doctr/
-LayoutLM/layoutlmv3-funsd-doctr-res*/
-LayoutLM/layoutlmv3-funsd-doctr-base-res*/
-LayoutLM/layoutlmv3-funsd-doctr-base/
-LayoutLM/layoutlmv3-funsd-doctr-large/
-LayoutLM/layoutlmv3-funsd-doctr-layoutgraph*/
 LayoutLM/layoutlmv3-funsd-zero-bbox/
 LayoutLM/docformer-*/
 UDOP/udop-funsd/
 LayoutLM/layout_graph_artifacts/
 LayoutLM/onnx_artifacts_gt
+LayoutLM/layoutlmv3-funsd-doctr/
+LayoutLM/layoutlmv3-funsd-doctr-base/
+LayoutLM/layoutlmv3-funsd-doctr-base-res224/
+LayoutLM/layoutlmv3-funsd-doctr-large/
 
-# GT-bbox checkpoints: keep only checkpoint-608, exclude the rest.
-LayoutLM/layoutlmv3-funsd/checkpoint-*/
-!LayoutLM/layoutlmv3-funsd/checkpoint-608/
-!LayoutLM/layoutlmv3-funsd/checkpoint-608/**
-
+# ── Mobile / Deployment ───────────────────────────────────────────────────────
+*.mlpackage/
+*.mlmodel
+*.onnx
+LayoutLM/iOSTestApp/DerivedData/
+LayoutLM/iOSTestApp/*.xcodeproj/project.xcworkspace/
+LayoutLM/iOSTestApp/*.xcodeproj/xcuserdata/
 
 # ── Training-only artifacts (not needed for inference) ────────────────────────
 # Must come AFTER the negation rules above so they re-apply to un-ignored dirs.
@@ -52,3 +74,5 @@ LayoutLM/layoutlmv3-funsd/checkpoint-*/
 **/scheduler.pt
 **/trainer_state.json
 **/training_args.bin
+
+AUDIT_REPORT.md

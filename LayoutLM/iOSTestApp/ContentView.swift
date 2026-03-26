@@ -86,11 +86,11 @@ struct ContentView: View {
                 .padding(.horizontal, 40)
                 
                 if runner == nil {
-                    Text("Error: Failed to load layoutlmv3_sparse.mlpackage")
+                    Text("Error: Failed to load LayoutLM model")
                         .foregroundColor(.red)
                         .font(.caption)
                 } else {
-                    Text("Model loaded — seq_len=512, input: ImageType (384x384)")
+                    Text("Model loaded — seq_len=512, input: Tensor (384x384)")
                         .foregroundColor(.green)
                         .font(.caption)
                 }

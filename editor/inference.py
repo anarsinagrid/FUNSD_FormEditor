@@ -16,6 +16,11 @@ try:
 except ImportError:
     HAS_GRAPH_LINKING = False
 
+try:
+    from LayoutLM.layoutlm_customOCR import OCRBackend
+except ImportError:
+    OCRBackend = None
+
 
 class InferenceError(RuntimeError):
     pass
@@ -27,6 +32,8 @@ class _WordPred:
     box_1000: List[int]
     label: str
     emb: torch.Tensor
+    ocr_confidence: float = 0.0
+    model_confidence: float = 0.0
 
 
 class LayoutLMGraphLinkingService:
@@ -42,6 +49,7 @@ class LayoutLMGraphLinkingService:
         checkpoint_dir: Optional[Path] = None,
         gnn_checkpoint: Optional[Path] = None,
         threshold: float = 0.5,
+        ocr_engine: str = "doctr",
     ):
         root = Path(__file__).resolve().parent.parent
         self.checkpoint_dir = checkpoint_dir or (root / "LayoutLM" / "layoutlmv3-funsd" / "checkpoint-608")
@@ -49,13 +57,15 @@ class LayoutLMGraphLinkingService:
             root / "LayoutLM" / "graph_linking" / "checkpoints" / "best_model.pt"
         )
         self.threshold = threshold
+        self.ocr_engine = ocr_engine
         self.device = self._pick_device()
 
         if not self.checkpoint_dir.exists():
             raise InferenceError(f"LayoutLMv3 checkpoint not found: {self.checkpoint_dir}")
         if not self.gnn_checkpoint.exists():
             raise InferenceError(f"GNN checkpoint not found: {self.gnn_checkpoint}")
-        self._check_ocr_dependencies()
+        if self.ocr_engine == "tesseract":
+            self._check_ocr_dependencies()
 
         try:
             from transformers import LayoutLMv3ImageProcessor, LayoutLMv3TokenizerFast
@@ -72,6 +82,8 @@ class LayoutLMGraphLinkingService:
                 "Failed to load LayoutLMv3 processor from local checkpoint. "
                 "Ensure OCR dependencies are available."
             ) from e
+        
+        self.ocr_backend = OCRBackend(self.ocr_engine) if OCRBackend is not None else None
 
         self.token_model = LayoutLMv3ForTokenClassification.from_pretrained(
             str(self.checkpoint_dir),
@@ -93,11 +105,11 @@ class LayoutLMGraphLinkingService:
         image = Image.open(image_path).convert("RGB")
         width, height = image.size
 
-        words, boxes = self._run_ocr(image)
+        words, boxes, confidences = self._run_ocr(image)
         if not words:
             return {"blocks": [], "links": [], "tables": []}
 
-        word_preds = self._predict_word_labels(image, words, boxes)
+        word_preds = self._predict_word_labels(image, words, boxes, confidences)
         entities, node_feats = self._words_to_entities(word_preds)
 
         links = []
@@ -110,22 +122,27 @@ class LayoutLMGraphLinkingService:
                 "text": ent["text"],
                 "bbox": self._bbox_1000_to_px(ent["box"], width, height),
                 "label": ent["label"],
+                "confidence": ent["confidence"],
+                "needs_review": ent["needs_review"],
             }
             for ent in entities
         ]
 
         return {"blocks": blocks, "links": links, "tables": []}
 
-    def _run_ocr(self, image: Image.Image) -> Tuple[List[str], List[List[int]]]:
+    def _run_ocr(self, image: Image.Image) -> Tuple[List[str], List[List[int]], List[float]]:
         """
-        Uses processor OCR path (requires OCR runtime in environment).
+        Uses explicit OCRBackend if available or fallback to processor OCR path (requires OCR runtime in environment).
         Boxes are in FUNSD-style 0..1000 coordinates.
         """
+        if self.ocr_backend is not None:
+            words, boxes, confs, _ = self.ocr_backend.run(image)
+            return words, boxes, confs
         try:
             ocr_out = self.ocr_processor(image, return_tensors="pt")
             words = list(ocr_out.words[0])
             boxes = [list(map(int, b)) for b in ocr_out.boxes[0]]
-            return words, boxes
+            return words, boxes, [0.0] * len(words)
         except Exception as e:
             raise InferenceError(
                 "OCR failed. Install OCR dependencies (pytesseract + Tesseract binary) "
@@ -156,6 +173,7 @@ class LayoutLMGraphLinkingService:
         image: Image.Image,
         words: List[str],
         boxes: List[List[int]],
+        confidences: List[float],
     ) -> List[_WordPred]:
         enc = self.processor(
             image,
@@ -168,19 +186,33 @@ class LayoutLMGraphLinkingService:
         )
 
         word_ids = enc.word_ids(batch_index=0)
+        
+        token_confs = []
+        for wid in word_ids:
+            if wid is None:
+                token_confs.append(0.0)
+            else:
+                token_confs.append(confidences[wid])
+                
         inputs = {k: v.to(self.device) for k, v in enc.items()}
+        
+        if getattr(self.token_model.config, "use_ocr_confidence", False):
+            inputs["ocr_confidence"] = torch.tensor([token_confs], dtype=torch.float32, device=self.device)
 
         with torch.no_grad():
             out = self.token_model(**inputs, output_hidden_states=True)
 
         logits = out.logits.squeeze(0)  # (seq, num_labels)
+        probs = torch.softmax(logits, dim=-1)
         pred_ids = logits.argmax(-1).cpu().tolist()
+        pred_probs = probs.max(dim=-1).values.cpu().tolist()
         hidden = out.hidden_states[-1].squeeze(0).detach().cpu()  # (seq, 768)
 
         n_words = len(words)
         emb_sum = torch.zeros(n_words, hidden.shape[-1], dtype=torch.float32)
         emb_count = torch.zeros(n_words, dtype=torch.float32)
         word_label_ids = [0] * n_words  # default O
+        word_model_confs = [0.0] * n_words
         seen = [False] * n_words
 
         for tok_idx, wid in enumerate(word_ids):
@@ -190,6 +222,7 @@ class LayoutLMGraphLinkingService:
             emb_count[wid] += 1.0
             if not seen[wid]:
                 word_label_ids[wid] = pred_ids[tok_idx]
+                word_model_confs[wid] = pred_probs[tok_idx]
                 seen[wid] = True
 
         emb_count = emb_count.clamp(min=1.0)
@@ -204,6 +237,8 @@ class LayoutLMGraphLinkingService:
                     box_1000=boxes[i],
                     label=label_name,
                     emb=word_emb[i],
+                    ocr_confidence=confidences[i],
+                    model_confidence=word_model_confs[i],
                 )
             )
         return preds
@@ -233,6 +268,13 @@ class LayoutLMGraphLinkingService:
                 dim=0,
             )
             ent_id = len(entities)
+            
+            ocr_conf = sum(w.ocr_confidence for w in current) / len(current)
+            if ocr_conf > 1.0:
+                ocr_conf /= 100.0  # normalize tesseract 0-100 score
+            model_conf = sum(w.model_confidence for w in current) / len(current)
+            overall_conf = ocr_conf * model_conf
+            
             entities.append(
                 {
                     "idx": ent_id,
@@ -242,6 +284,10 @@ class LayoutLMGraphLinkingService:
                     "box": box,
                     "text": text,
                     "words": [w.text for w in current],
+                    "confidence": overall_conf,
+                    "ocr_confidence": ocr_conf,
+                    "model_confidence": model_conf,
+                    "needs_review": overall_conf < 0.7,
                 }
             )
             node_feats.append(feat)

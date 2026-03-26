@@ -28,7 +28,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-import evaluate as hf_evaluate
 import numpy as np
 import torch
 import torch.nn as nn
@@ -41,6 +40,11 @@ from transformers import (
     LayoutLMv3Processor,
     LayoutLMv3TokenizerFast,
 )
+
+try:
+    import evaluate as hf_evaluate
+except Exception:
+    hf_evaluate = None
 
 try:
     from torch_geometric.nn import GATv2Conv
@@ -56,9 +60,9 @@ sys.path.insert(0, SCRIPT_DIR)
 
 from layoutlm_customOCR import OCRBackend, align_ocr_to_ground_truth
 
-DEFAULT_CHECKPOINT = os.path.join(SCRIPT_DIR, "layoutlmv3-funsd-doctr", "checkpoint-800")
+DEFAULT_CHECKPOINT = os.path.join(SCRIPT_DIR, "layoutlmv3-funsd", "checkpoint-608")
 DEFAULT_CACHE_DIR = os.getenv("HF_CACHE_DIR") or os.path.join(REPO_ROOT, ".hf_cache")
-DEFAULT_MODEL_DIR = os.path.join(SCRIPT_DIR, "layoutlmv3-funsd-doctr-layoutgraph")
+DEFAULT_MODEL_DIR = os.path.join(SCRIPT_DIR, "layoutlmv3-funsd-layoutgraph-gt")
 DEFAULT_OUTPUT_DIR = os.path.join(SCRIPT_DIR, "layout_graph_artifacts")
 DEFAULT_REPORT_PATH = os.path.join(DEFAULT_OUTPUT_DIR, "layout_graph_report.json")
 
@@ -70,6 +74,10 @@ RELATION_NAME_TO_ID = {
     "aligned-with": 4,
 }
 RELATION_ID_TO_NAME = {v: k for k, v in RELATION_NAME_TO_ID.items()}
+PSEUDO_RELATED_FIELD_NOTE = (
+    "related_field metrics are computed from pseudo Q->A targets inferred from "
+    "entity labels and spatial proximity (not from gold annotated relation pairs)."
+)
 
 
 @dataclass
@@ -476,6 +484,7 @@ def _load_processor(cache_dir: str, init_checkpoint: str, input_size: int) -> La
             "microsoft/layoutlmv3-base",
             apply_ocr=False,
             cache_dir=cache_dir,
+            local_files_only=True,
         )
     except Exception:
         image_processor = LayoutLMv3ImageProcessor(apply_ocr=False)
@@ -1066,7 +1075,10 @@ def _compute_entity_metrics(
     true_all: List[List[str]],
     pred_all: List[List[str]],
 ) -> Tuple[Dict[str, float], Dict[str, Dict[str, float]]]:
-    result = seqeval_metric.compute(predictions=pred_all, references=true_all)
+    if seqeval_metric is not None:
+        result = seqeval_metric.compute(predictions=pred_all, references=true_all)
+    else:
+        result = _fallback_seqeval_with_per_class(pred_all, true_all)
     overall = {
         "precision": round(float(result["overall_precision"]), 4),
         "recall": round(float(result["overall_recall"]), 4),
@@ -1086,6 +1098,106 @@ def _compute_entity_metrics(
         }
 
     return overall, per_class
+
+
+def _extract_bio_entities(labels: Sequence[str]) -> List[Tuple[str, int, int]]:
+    out: List[Tuple[str, int, int]] = []
+    start = -1
+    ent_type = None
+
+    def flush(end_idx: int):
+        nonlocal start, ent_type
+        if ent_type is not None and start >= 0:
+            out.append((ent_type, start, end_idx))
+        start = -1
+        ent_type = None
+
+    for i, label in enumerate(labels):
+        if label.startswith("B-"):
+            flush(i - 1)
+            ent_type = label[2:]
+            start = i
+            continue
+
+        if label.startswith("I-"):
+            cur_type = label[2:]
+            if ent_type == cur_type and start >= 0:
+                continue
+            flush(i - 1)
+            ent_type = cur_type
+            start = i
+            continue
+
+        flush(i - 1)
+
+    flush(len(labels) - 1)
+    return out
+
+
+def _fallback_seqeval_with_per_class(
+    pred_all: Sequence[Sequence[str]],
+    true_all: Sequence[Sequence[str]],
+) -> Dict[str, Any]:
+    tp = fp = fn = 0
+    correct_tokens = 0
+    total_tokens = 0
+
+    true_by_class: Dict[str, Set[Tuple[int, int, int]]] = {}
+    pred_by_class: Dict[str, Set[Tuple[int, int, int]]] = {}
+
+    for doc_idx, (pred_doc, true_doc) in enumerate(zip(pred_all, true_all)):
+        length = min(len(pred_doc), len(true_doc))
+        if length <= 0:
+            continue
+
+        pred_labels = list(pred_doc[:length])
+        true_labels = list(true_doc[:length])
+
+        total_tokens += length
+        correct_tokens += sum(1 for p, t in zip(pred_labels, true_labels) if p == t)
+
+        pred_entities = {(ent_type, s, e) for ent_type, s, e in _extract_bio_entities(pred_labels)}
+        true_entities = {(ent_type, s, e) for ent_type, s, e in _extract_bio_entities(true_labels)}
+
+        tp += len(pred_entities & true_entities)
+        fp += len(pred_entities - true_entities)
+        fn += len(true_entities - pred_entities)
+
+        for ent_type, s, e in true_entities:
+            true_by_class.setdefault(ent_type, set()).add((doc_idx, s, e))
+        for ent_type, s, e in pred_entities:
+            pred_by_class.setdefault(ent_type, set()).add((doc_idx, s, e))
+
+    precision = float(tp / (tp + fp)) if (tp + fp) > 0 else 0.0
+    recall = float(tp / (tp + fn)) if (tp + fn) > 0 else 0.0
+    f1 = float((2.0 * precision * recall) / (precision + recall)) if (precision + recall) > 0 else 0.0
+    accuracy = float(correct_tokens / total_tokens) if total_tokens > 0 else 0.0
+
+    result: Dict[str, Any] = {
+        "overall_precision": precision,
+        "overall_recall": recall,
+        "overall_f1": f1,
+        "overall_accuracy": accuracy,
+    }
+
+    all_types = sorted(set(true_by_class.keys()) | set(pred_by_class.keys()))
+    for ent_type in all_types:
+        true_set = true_by_class.get(ent_type, set())
+        pred_set = pred_by_class.get(ent_type, set())
+        c_tp = len(pred_set & true_set)
+        c_fp = len(pred_set - true_set)
+        c_fn = len(true_set - pred_set)
+        c_prec = float(c_tp / (c_tp + c_fp)) if (c_tp + c_fp) > 0 else 0.0
+        c_rec = float(c_tp / (c_tp + c_fn)) if (c_tp + c_fn) > 0 else 0.0
+        c_f1 = float((2.0 * c_prec * c_rec) / (c_prec + c_rec)) if (c_prec + c_rec) > 0 else 0.0
+        result[ent_type] = {
+            "precision": c_prec,
+            "recall": c_rec,
+            "f1": c_f1,
+            "number": len(true_set),
+        }
+
+    return result
 
 
 def _prf(tp: int, fp: int, fn: int) -> Dict[str, float]:
@@ -1118,7 +1230,7 @@ def _evaluate_baseline_model(
     o_label_id: int,
     metric_cache_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
-    seqeval_metric = hf_evaluate.load("seqeval", cache_dir=metric_cache_dir)
+    seqeval_metric = hf_evaluate.load("seqeval", cache_dir=metric_cache_dir) if hf_evaluate is not None else None
     true_all: List[List[str]] = []
     pred_all: List[List[str]] = []
 
@@ -1154,10 +1266,13 @@ def _evaluate_baseline_model(
         rel_fn += len(gt_pairs - pred_pairs)
 
     overall, per_class = _compute_entity_metrics(seqeval_metric, true_all, pred_all)
+    related = _prf(rel_tp, rel_fp, rel_fn)
     return {
         "entity": overall,
         "per_class": per_class,
-        "related_field": _prf(rel_tp, rel_fp, rel_fn),
+        "related_field": related,
+        "pseudo_related_field": related,
+        "relation_target_definition": PSEUDO_RELATED_FIELD_NOTE,
         "avg_model_latency_ms": round(float(statistics.mean(latencies_ms)) if latencies_ms else 0.0, 3),
         "docs": len(samples),
     }
@@ -1173,7 +1288,7 @@ def _evaluate_graph_model(
     ablate_relation_id: Optional[int] = None,
     metric_cache_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
-    seqeval_metric = hf_evaluate.load("seqeval", cache_dir=metric_cache_dir)
+    seqeval_metric = hf_evaluate.load("seqeval", cache_dir=metric_cache_dir) if hf_evaluate is not None else None
     true_all: List[List[str]] = []
     pred_all: List[List[str]] = []
 
@@ -1237,10 +1352,13 @@ def _evaluate_graph_model(
         rel_fn += len(gt_pairs - pred_pairs)
 
     overall, per_class = _compute_entity_metrics(seqeval_metric, true_all, pred_all)
+    related = _prf(rel_tp, rel_fp, rel_fn)
     return {
         "entity": overall,
         "per_class": per_class,
-        "related_field": _prf(rel_tp, rel_fp, rel_fn),
+        "related_field": related,
+        "pseudo_related_field": related,
+        "relation_target_definition": PSEUDO_RELATED_FIELD_NOTE,
         "avg_model_latency_ms": round(float(statistics.mean(latencies_ms)) if latencies_ms else 0.0, 3),
         "avg_graph_edges": round(float(statistics.mean(edge_counts)) if edge_counts else 0.0, 2),
         "docs": len(samples),
@@ -1634,11 +1752,19 @@ def _handle_evaluate(args) -> Dict[str, Any]:
         metric_cache_dir=common["cache_dir"],
     )
 
+    recommended = "graph" if graph_report["entity"]["f1"] >= baseline_report["entity"]["f1"] else "baseline"
+    acceptance_checks = {
+        "graph_beats_baseline_entity_f1": bool(graph_report["entity"]["f1"] >= baseline_report["entity"]["f1"]),
+        "entity_f1_gain_ge_0_05": bool((graph_report["entity"]["f1"] - baseline_report["entity"]["f1"]) >= 0.05),
+        "related_field_f1_ge_0_85": bool(graph_report["related_field"]["f1"] >= 0.85),
+    }
     payload = {
         "status": "ok",
         "mode": "evaluate",
         "timestamp_utc": datetime.utcnow().isoformat() + "Z",
         "checkpoint": graph_ckpt,
+        "seqeval_backend": "evaluate/seqeval" if hf_evaluate is not None else "builtin_fallback_seqeval",
+        "relation_target_definition": PSEUDO_RELATED_FIELD_NOTE,
         "baseline": baseline_report,
         "graph": graph_report,
         "delta_entity_f1": round(float(graph_report["entity"]["f1"] - baseline_report["entity"]["f1"]), 4),
@@ -1646,6 +1772,8 @@ def _handle_evaluate(args) -> Dict[str, Any]:
             float(graph_report["related_field"]["f1"] - baseline_report["related_field"]["f1"]),
             4,
         ),
+        "recommended_deployment": recommended,
+        "acceptance_checks": acceptance_checks,
     }
     return payload
 
@@ -1657,6 +1785,7 @@ def _handle_relation_eval(args) -> Dict[str, Any]:
         "mode": "relation_eval",
         "timestamp_utc": full["timestamp_utc"],
         "checkpoint": full["checkpoint"],
+        "relation_target_definition": PSEUDO_RELATED_FIELD_NOTE,
         "baseline_related_field": full["baseline"]["related_field"],
         "graph_related_field": full["graph"]["related_field"],
         "delta_related_field_f1": full["delta_related_field_f1"],
@@ -1838,6 +1967,12 @@ def _handle_run_all(args) -> Dict[str, Any]:
         metric_cache_dir=common["cache_dir"],
     )
 
+    recommended = "graph" if graph_report["entity"]["f1"] >= baseline_report["entity"]["f1"] else "baseline"
+    acceptance_checks = {
+        "graph_beats_baseline_entity_f1": bool(graph_report["entity"]["f1"] >= baseline_report["entity"]["f1"]),
+        "entity_f1_gain_ge_0_05": bool((graph_report["entity"]["f1"] - baseline_report["entity"]["f1"]) >= 0.05),
+        "related_field_f1_ge_0_85": bool(graph_report["related_field"]["f1"] >= 0.85),
+    }
     payload = {
         "status": "ok",
         "mode": "run_all",
@@ -1846,6 +1981,8 @@ def _handle_run_all(args) -> Dict[str, Any]:
         "init_checkpoint": common["init_checkpoint"],
         "device": str(common["device"]),
         "input_size": common["input_size"],
+        "seqeval_backend": "evaluate/seqeval" if hf_evaluate is not None else "builtin_fallback_seqeval",
+        "relation_target_definition": PSEUDO_RELATED_FIELD_NOTE,
         "train_report": train_report,
         "test_stats": common["test_stats"],
         "baseline": baseline_report,
@@ -1857,6 +1994,8 @@ def _handle_run_all(args) -> Dict[str, Any]:
         ),
         "ocr_corruption_analysis": low_conf_report,
         "relation_importance": importance_report,
+        "recommended_deployment": recommended,
+        "acceptance_checks": acceptance_checks,
     }
     return payload
 

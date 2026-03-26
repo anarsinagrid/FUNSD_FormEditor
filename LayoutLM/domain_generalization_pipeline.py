@@ -6,7 +6,6 @@ Standalone OOD generalization + concept steering pipeline for LayoutLMv3.
 Task scope:
 - No fine-tuning of model weights.
 - Phase 1 (required now): RVL-CDIP OOD evaluation.
-- Phase 2 (optional / skip-aware): DocILE entity F1 evaluation when available.
 - Test-time concept steering using four concepts:
     handwritten, printed, structured, unstructured
 
@@ -23,10 +22,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
 import statistics
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -51,7 +52,7 @@ sys.path.insert(0, SCRIPT_DIR)
 
 from layoutlm_customOCR import OCRBackend, align_ocr_to_ground_truth
 
-DEFAULT_CHECKPOINT = os.path.join(SCRIPT_DIR, "layoutlmv3-funsd-doctr", "checkpoint-800")
+DEFAULT_CHECKPOINT = os.path.join(SCRIPT_DIR, "layoutlmv3-funsd-doctr", "checkpoint-1250")
 DEFAULT_CACHE_DIR = os.getenv("HF_CACHE_DIR") or os.path.join(REPO_ROOT, ".hf_cache")
 DEFAULT_OUTPUT_DIR = os.path.join(SCRIPT_DIR, "domain_generalization_artifacts")
 DEFAULT_REPORT_PATH = os.path.join(DEFAULT_OUTPUT_DIR, "domain_transfer_report.json")
@@ -63,7 +64,7 @@ DEFAULT_INVARIANCE_PATH = os.path.join(DEFAULT_OUTPUT_DIR, "entity_invariance_re
 CONCEPTS = ["handwritten", "printed", "structured", "unstructured"]
 FUNSD_DATASET_NAME = "nielsr/funsd"
 RVL_CANDIDATES = ["chainyo/rvl-cdip", "rvl_cdip", "aharley/rvl_cdip"]
-DOCILE_CANDIDATES = ["docile", "rossum/docile"]
+CORD_CANDIDATES = ["naver-clova-ix/cord-v2", "naver-ai-corp/cord-v2", "naver-ai/cord-v2", "naver-ai-corp--cord-v2"]
 
 
 @dataclass
@@ -97,6 +98,54 @@ def _str2bool(v: Any) -> bool:
     if s in {"0", "false", "f", "no", "n", "off"}:
         return False
     raise ValueError(f"Invalid bool value: {v}")
+
+
+def _file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _git_commit_short() -> Optional[str]:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", REPO_ROOT, "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0:
+            value = proc.stdout.strip()
+            return value or None
+    except Exception:
+        return None
+    return None
+
+
+def _build_provenance(args, artifact_name: str) -> Dict[str, Any]:
+    script_path = os.path.abspath(__file__)
+    provenance = {
+        "artifact_name": artifact_name,
+        "generated_at_utc": datetime.utcnow().isoformat() + "Z",
+        "command": str(getattr(args, "command", "unknown")),
+        "script_path": script_path,
+        "script_sha256": _file_sha256(script_path),
+        "git_commit_short": _git_commit_short(),
+        "policy": {
+            "ocr_inference": "doctr",
+            "funsd_eval_docs": 50,
+            "confidence_aware_e2e": "disabled_by_design",
+        },
+    }
+    return provenance
+
+
+def _attach_provenance(payload: Dict[str, Any], args, artifact_name: str) -> Dict[str, Any]:
+    payload = dict(payload)
+    payload["provenance"] = _build_provenance(args, artifact_name=artifact_name)
+    return payload
 
 
 def _pick_device(name: str) -> torch.device:
@@ -196,6 +245,7 @@ def _load_model_and_processor(
             "microsoft/layoutlmv3-base",
             apply_ocr=False,
             cache_dir=cache_dir,
+            local_files_only=True,
         )
     except Exception:
         image_processor = LayoutLMv3ImageProcessor(apply_ocr=False)
@@ -528,10 +578,36 @@ def _evaluate_funsd_entity(
     return {
         "metric_type": "entity_f1",
         "overall": overall,
+        "token_f1": _calculate_token_level_f1(true_all, pred_all),
         "per_class": per_class,
         "avg_model_latency_ms": round(float(statistics.mean(latencies)) if latencies else 0.0, 3),
         "docs": len(samples),
     }
+
+
+def _calculate_token_level_f1(true_all: List[List[str]], pred_all: List[List[str]]) -> float:
+    """Computes Micro-F1 at the token level, disregarding BIO sequence semantics."""
+    t_labels = [l for seq in true_all for l in seq]
+    p_labels = [l for seq in pred_all for l in seq]
+    
+    tp = 0
+    fp = 0
+    fn = 0
+    
+    for t, p in zip(t_labels, p_labels):
+        if t == p:
+            if t != "O":
+                tp += 1
+        else:
+            if t != "O":
+                fn += 1
+            if p != "O":
+                fp += 1
+                
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    return round(float(f1), 4)
 
 
 # ---------------------------------------------------------------------------
@@ -582,6 +658,38 @@ def _load_rvl_dataset(cache_dir: str) -> Tuple[Optional[Any], Dict[str, Any]]:
         "reason": "Unable to load RVL-CDIP from known dataset names.",
         "tried": errors,
         "action": "Check internet / HF access. If needed, manually download and mount a local RVL dataset.",
+    }
+
+
+def _load_cord_dataset(cache_dir: str) -> Tuple[Optional[Any], Dict[str, Any]]:
+    import glob
+    errors = {}
+    for name in CORD_CANDIDATES:
+        try:
+            ds = load_dataset(name, cache_dir=cache_dir)
+            return ds, {"status": "ready", "dataset_name": name}
+        except Exception as e:
+            errors[name] = str(e)
+
+    # Try local parquet fallback
+    parquet_pattern = os.path.join(cache_dir, "datasets", "naver-ai-corp___cord-v2", "default", "*.parquet")
+    parquet_files = glob.glob(parquet_pattern)
+    if not parquet_files:
+        parquet_pattern = os.path.join(cache_dir, "datasets", "naver-ai-corp--cord-v2", "default", "*.parquet")
+        parquet_files = glob.glob(parquet_pattern)
+
+    if parquet_files:
+        try:
+            ds = load_dataset("parquet", data_files={"test": parquet_files}, cache_dir=cache_dir)
+            return ds, {"status": "ready", "source": "local_parquet", "files": len(parquet_files)}
+        except Exception as e:
+            errors["local_parquet"] = str(e)
+
+    return None, {
+        "status": "error",
+        "reason": "Unable to load CORD from known dataset names.",
+        "tried": errors,
+        "action": "Check internet / HF access. For offline mode, ensure CORD is in cache_dir.",
     }
 
 
@@ -697,6 +805,141 @@ def _build_rvl_prototypes(
     return prototypes
 
 
+def _build_cord_prototypes(
+    model: LayoutLMv3ForTokenClassification,
+    processor: LayoutLMv3Processor,
+    dataset_split,
+    input_size: int,
+    ocr_backend: OCRBackend,
+    train_limit: Optional[int],
+) -> Dict[str, torch.Tensor]:
+    """CORD uses string labels in its 'ground_truth' or 'label' field depending on version."""
+    if train_limit is not None:
+        dataset_split = dataset_split.select(range(min(int(train_limit), len(dataset_split))))
+
+    sums: Dict[str, torch.Tensor] = {}
+    counts: Dict[str, int] = {}
+
+    for idx, ex in enumerate(dataset_split):
+        print(f"[cord_proto] {idx + 1}/{len(dataset_split)}", end="\r")
+        image = ex["image"].convert("RGB")
+        
+        # CORD-v2 usually has a 'label' or we use some document-level proxy.
+        # If it's pure receipts, we can use the main categories if available.
+        # For OOD, we'll try to extract the most descriptive class.
+        label = "receipt" # Default fallback
+        if "label" in ex:
+            label = str(ex["label"])
+        elif "ground_truth" in ex:
+            # Try to find a coarse category in JSON
+            try:
+                gt = json.loads(ex["ground_truth"])
+                label = gt.get("valid_line", [{}])[0].get("category", "receipt")
+            except: pass
+
+        inputs_cpu, concept_scores, _ = _prepare_doc_inputs_for_image(
+            image=image,
+            processor=processor,
+            ocr_backend=ocr_backend,
+            input_size=input_size,
+        )
+        inputs = {k: v.to(next(model.parameters()).device) for k, v in inputs_cpu.items()}
+
+        with torch.no_grad():
+            _, doc_vec = _forward_sequence_output(
+                model=model,
+                inputs=inputs,
+                concept_vectors=None,
+                concept_scores=concept_scores,
+                alpha=0.0,
+            )
+        vec = _normalize(doc_vec.squeeze(0).detach().cpu())
+
+        if label not in sums:
+            sums[label] = vec.clone()
+            counts[label] = 1
+        else:
+            sums[label] += vec
+            counts[label] += 1
+
+    print()
+    prototypes = {l: _normalize(s / max(1, counts[l])) for l, s in sums.items()}
+    return prototypes
+
+
+def _evaluate_cord(
+    model: LayoutLMv3ForTokenClassification,
+    processor: LayoutLMv3Processor,
+    dataset_split,
+    input_size: int,
+    ocr_backend: OCRBackend,
+    prototypes: Dict[str, torch.Tensor],
+    concept_vectors: Optional[Dict[str, torch.Tensor]],
+    alpha: float,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    if not prototypes:
+        return {"status": "error", "reason": "No prototypes for CORD."}
+
+    if limit is not None:
+        dataset_split = dataset_split.select(range(min(int(limit), len(dataset_split))))
+
+    correct = 0
+    total = 0
+    latencies: List[float] = []
+
+    proto_keys = list(prototypes.keys())
+    proto_matrix = torch.stack([prototypes[k] for k in proto_keys])
+
+    for idx, ex in enumerate(dataset_split):
+        image = ex["image"].convert("RGB")
+        true_label = "receipt"
+        if "label" in ex:
+            true_label = str(ex["label"])
+        elif "ground_truth" in ex:
+            try:
+                gt = json.loads(ex["ground_truth"])
+                true_label = gt.get("valid_line", [{}])[0].get("category", "receipt")
+            except: pass
+
+        inputs_cpu, concept_scores, _ = _prepare_doc_inputs_for_image(
+            image=image,
+            processor=processor,
+            ocr_backend=ocr_backend,
+            input_size=input_size,
+        )
+        inputs = {k: v.to(next(model.parameters()).device) for k, v in inputs_cpu.items()}
+
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            _, doc_vec = _forward_sequence_output(
+                model=model,
+                inputs=inputs,
+                concept_vectors=concept_vectors,
+                concept_scores=concept_scores,
+                alpha=alpha,
+            )
+        latencies.append((time.perf_counter() - t0) * 1000.0)
+
+        vec = _normalize(doc_vec.squeeze(0).detach().cpu())
+        sims = torch.matmul(proto_matrix, vec)
+        pred_idx = int(sims.argmax())
+        pred_label = proto_keys[pred_idx]
+
+        if pred_label == true_label:
+            correct += 1
+        total += 1
+
+    accuracy = float(correct / total) if total > 0 else 0.0
+    return {
+        "status": "ok",
+        "metric_type": "accuracy",
+        "accuracy": round(accuracy, 4),
+        "total_docs": total,
+        "avg_latency_ms": round(float(statistics.mean(latencies)) if latencies else 0.0, 3)
+    }
+
+
 def _macro_f1_from_confusion(
     tp: Dict[int, int],
     fp: Dict[int, int],
@@ -790,133 +1033,6 @@ def _evaluate_rvl(
     }
 
 
-# ---------------------------------------------------------------------------
-# DocILE (optional / skip-aware)
-# ---------------------------------------------------------------------------
-
-def _load_docile_dataset(cache_dir: str) -> Tuple[Optional[Any], Dict[str, Any]]:
-    errors = {}
-    for name in DOCILE_CANDIDATES:
-        try:
-            ds = load_dataset(name, cache_dir=cache_dir)
-            return ds, {"status": "ready", "dataset_name": name}
-        except Exception as e:
-            errors[name] = str(e)
-    return None, {
-        "status": "skipped_with_reason",
-        "reason": "DocILE dataset is not currently available via known dataset names.",
-        "tried": errors,
-        "action": (
-            "Provide DocILE locally or install access route, then re-run with --docile_enable true. "
-            "Pipeline remains functional for RVL phase."
-        ),
-    }
-
-
-def _pick_docile_eval_split(docile_ds) -> Optional[str]:
-    for k in ("test", "validation", "val"):
-        if k in docile_ds:
-            return k
-    return None
-
-
-def _can_eval_docile_entity(docile_ds, split_name: str) -> Tuple[bool, str]:
-    cols = set(docile_ds[split_name].column_names)
-    needed = {"image", "words", "bboxes", "ner_tags"}
-    if needed.issubset(cols):
-        return True, "ready"
-    return False, f"unsupported_schema columns={sorted(cols)}"
-
-
-def _evaluate_docile_entity(
-    model: LayoutLMv3ForTokenClassification,
-    processor: LayoutLMv3Processor,
-    docile_ds,
-    split_name: str,
-    label_list: Sequence[str],
-    o_label_id: int,
-    input_size: int,
-    ocr_backend: OCRBackend,
-    cache_dir: str,
-    concept_vectors: Optional[Dict[str, torch.Tensor]],
-    alpha: float,
-    limit: Optional[int],
-) -> Dict[str, Any]:
-    split = docile_ds[split_name]
-    if limit is not None:
-        split = split.select(range(min(int(limit), len(split))))
-
-    seqeval = hf_evaluate.load("seqeval", cache_dir=cache_dir)
-
-    true_all: List[List[str]] = []
-    pred_all: List[List[str]] = []
-
-    for idx, ex in enumerate(split):
-        print(f"[docile_eval] {idx + 1}/{len(split)}", end="\r")
-
-        image = ex["image"].convert("RGB")
-        gt_words = ex["words"]
-        gt_boxes = ex["bboxes"]
-        gt_labels = ex["ner_tags"]
-
-        ocr = _run_ocr_doctr(ocr_backend, image)
-        concept_scores = _compute_concept_scores(ocr.words, ocr.boxes_1000, ocr.confidences)
-
-        aligned = align_ocr_to_ground_truth(
-            ocr.words,
-            ocr.boxes_1000,
-            gt_words,
-            gt_boxes,
-            gt_labels,
-            default_label_id=o_label_id,
-        )
-
-        image_sq = _pad_to_square(image, input_size)
-        enc = processor(
-            image_sq,
-            ocr.words,
-            boxes=ocr.boxes_1000,
-            word_labels=aligned,
-            padding="max_length",
-            truncation=True,
-            max_length=512,
-            return_tensors="pt",
-        )
-        word_ids = enc.word_ids(batch_index=0)
-        inputs = {k: enc[k].to(next(model.parameters()).device) for k in enc.keys() if k != "labels"}
-        token_labels = enc["labels"].squeeze(0).cpu().tolist()
-
-        with torch.no_grad():
-            logits, _ = _forward_sequence_output(
-                model=model,
-                inputs=inputs,
-                concept_vectors=concept_vectors,
-                concept_scores=concept_scores,
-                alpha=alpha,
-            )
-
-        pred_ids = logits.argmax(-1).squeeze(0).cpu().tolist()
-        doc_true, doc_pred, _ = _collapse_word_predictions(
-            pred_ids=pred_ids,
-            token_labels=token_labels,
-            word_ids=word_ids,
-            label_list=label_list,
-            o_label_id=o_label_id,
-        )
-        true_all.append(doc_true)
-        pred_all.append(doc_pred)
-
-    print()
-    out = seqeval.compute(predictions=pred_all, references=true_all)
-    return {
-        "metric_type": "entity_f1",
-        "overall": {
-            "precision": round(float(out["overall_precision"]), 4),
-            "recall": round(float(out["overall_recall"]), 4),
-            "f1": round(float(out["overall_f1"]), 4),
-            "accuracy": round(float(out["overall_accuracy"]), 4),
-        },
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -1038,20 +1154,18 @@ def _write_transfer_matrix_csv(
     steered_report: Dict[str, Any],
 ) -> None:
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    cols = ["variant", "funsd_source", "rvl_cdip", "docile"]
+    cols = ["variant", "funsd_source", "rvl_cdip"]
 
     rows = [
         {
             "variant": "baseline",
             "funsd_source": _metric_cell(baseline_report.get("funsd_source")),
             "rvl_cdip": _metric_cell(baseline_report.get("rvl_cdip")),
-            "docile": _metric_cell(baseline_report.get("docile")),
         },
         {
             "variant": "concept_steered",
             "funsd_source": _metric_cell(steered_report.get("funsd_source")),
             "rvl_cdip": _metric_cell(steered_report.get("rvl_cdip")),
-            "docile": _metric_cell(steered_report.get("docile")),
         },
     ]
 
@@ -1068,48 +1182,43 @@ def _write_entity_invariance_report(
 ) -> None:
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-    source_pc = baseline_report.get("funsd_source", {}).get("per_class", {})
-    docile_pc = baseline_report.get("docile", {}).get("per_class", {})
+    base_pc = baseline_report.get("funsd_source", {}).get("per_class", {}) or {}
+    steered_pc = steered_report.get("funsd_source", {}).get("per_class", {}) or {}
+    labels = sorted(set(base_pc.keys()) | set(steered_pc.keys()))
 
-    lines = ["# Entity Invariance Report", ""]
+    lines: List[str] = [
+        "# Entity Invariance Report",
+        "",
+        "This report summarizes FUNSD per-class F1 before and after concept steering.",
+        "",
+        "## Source (FUNSD) Per-Class F1",
+    ]
 
-    if not source_pc:
-        lines.append("No source per-class statistics available.")
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-        return
+    if not labels:
+        lines.extend(
+            [
+                "",
+                "- Per-class metrics are unavailable in baseline/steered reports.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "| Entity | Baseline F1 | Steered F1 | Delta |",
+                "| --- | ---: | ---: | ---: |",
+            ]
+        )
+        for label in labels:
+            b_f1 = base_pc.get(label, {}).get("f1", None)
+            s_f1 = steered_pc.get(label, {}).get("f1", None)
+            if b_f1 is None and s_f1 is None:
+                continue
 
-    if not docile_pc:
-        lines.append("DocILE entity split not available yet; domain-invariance classification pending Phase 2 dataset access.")
-        lines.append("")
-        lines.append("## Source (FUNSD) Per-Class F1")
-        for cls, vals in sorted(source_pc.items()):
-            lines.append(f"- {cls}: {vals.get('f1', 0.0):.4f}")
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-        return
-
-    threshold = 0.10
-    invariant = []
-    specific = []
-
-    all_classes = sorted(set(source_pc.keys()) | set(docile_pc.keys()))
-    lines.append("## Source vs Target (DocILE) Delta")
-
-    for cls in all_classes:
-        src = float(source_pc.get(cls, {}).get("f1", 0.0))
-        tgt = float(docile_pc.get(cls, {}).get("f1", 0.0))
-        delta = tgt - src
-        lines.append(f"- {cls}: source={src:.4f}, target={tgt:.4f}, delta={delta:+.4f}")
-        if abs(delta) <= threshold:
-            invariant.append(cls)
-        else:
-            specific.append(cls)
-
-    lines.append("")
-    lines.append(f"Invariant threshold: |delta| <= {threshold:.2f}")
-    lines.append(f"Domain-invariant: {', '.join(invariant) if invariant else 'none'}")
-    lines.append(f"Domain-specific: {', '.join(specific) if specific else 'none'}")
+            b_val = float(b_f1) if b_f1 is not None else 0.0
+            s_val = float(s_f1) if s_f1 is not None else 0.0
+            delta = s_val - b_val
+            lines.append(f"| {label} | {b_val:.4f} | {s_val:.4f} | {delta:+.4f} |")
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -1146,38 +1255,7 @@ def _run_prepare_data(args) -> Dict[str, Any]:
         rvl_status["split_selected"] = split_name
         rvl_status["split_size"] = int(len(rvl_ds[split_name]))
 
-    docile_status = {
-        "status": "skipped_with_reason",
-        "reason": "DocILE disabled by --docile_enable false.",
-    }
-    if _str2bool(args.docile_enable):
-        docile_ds, docile_status = _load_docile_dataset(cache_dir)
-        if docile_ds is not None:
-            split_name = _pick_docile_eval_split(docile_ds)
-            if split_name is None:
-                docile_status = {
-                    "status": "skipped_with_reason",
-                    "reason": f"No eval split found in DocILE keys={list(docile_ds.keys())}",
-                }
-            else:
-                ok, reason = _can_eval_docile_entity(docile_ds, split_name)
-                if ok:
-                    docile_status.update(
-                        {
-                            "split_selected": split_name,
-                            "split_size": int(len(docile_ds[split_name])),
-                            "entity_eval_ready": True,
-                        }
-                    )
-                else:
-                    docile_status.update(
-                        {
-                            "split_selected": split_name,
-                            "split_size": int(len(docile_ds[split_name])),
-                            "entity_eval_ready": False,
-                            "reason": reason,
-                        }
-                    )
+
 
     errors: List[str] = []
     if funsd_ds is None:
@@ -1192,8 +1270,8 @@ def _run_prepare_data(args) -> Dict[str, Any]:
         "download_mode": args.download_mode,
         "funsd_source": funsd_status,
         "rvl_cdip": rvl_status,
-        "docile": docile_status,
     }
+    payload = _attach_provenance(payload, args, artifact_name="data_status")
 
     _json_dump(os.path.join(output_dir, "data_status.json"), payload)
     return payload
@@ -1232,6 +1310,7 @@ def _run_extract_concepts(args) -> Dict[str, Any]:
         "concept_vector_path": vec_path,
         "concept_stats": stats,
     }
+    payload = _attach_provenance(payload, args, artifact_name="concept_vector_stats")
     _json_dump(stats_path, payload)
     return payload
 
@@ -1286,78 +1365,74 @@ def _evaluate_all_domains(
         }
     else:
         split_name = args.rvl_split if args.rvl_split in rvl_ds else list(rvl_ds.keys())[0]
-        proto_split = rvl_ds["train"] if "train" in rvl_ds else rvl_ds[split_name]
-        print("[eval] RVL prototype build (no fine-tune) ...")
-        prototypes = _build_rvl_prototypes(
-            model=model,
-            processor=processor,
-            dataset_split=proto_split,
-            input_size=input_size,
-            ocr_backend=backend,
-            train_limit=args.rvl_train_limit,
-        )
-        print("[eval] RVL evaluation ...")
-        rvl_report = _evaluate_rvl(
-            model=model,
-            processor=processor,
-            dataset_split=rvl_ds[split_name],
-            input_size=input_size,
-            ocr_backend=backend,
-            prototypes=prototypes,
-            concept_vectors=concept_vectors,
-            alpha=alpha,
-            limit=args.limit,
-        )
-        rvl_report["split"] = split_name
-
-    docile_report: Dict[str, Any] = {
-        "status": "skipped_with_reason",
-        "metric_type": "entity_f1",
-        "reason": "DocILE disabled by --docile_enable false.",
-    }
-
-    if _str2bool(args.docile_enable):
-        print("[eval] DocILE setup ...")
-        docile_ds, docile_status = _load_docile_dataset(cache_dir)
-        if docile_ds is None:
-            docile_report = {
+        if "train" not in rvl_ds:
+            rvl_report = {
                 "status": "skipped_with_reason",
-                "metric_type": "entity_f1",
-                "reason": docile_status,
+                "metric_type": "accuracy",
+                "reason": {
+                    "message": (
+                        "RVL train split is unavailable. Prototype construction from eval split "
+                        "is disabled to avoid data leakage."
+                    ),
+                    "available_splits": list(rvl_ds.keys()),
+                    "requested_eval_split": split_name,
+                },
             }
         else:
-            split_name = _pick_docile_eval_split(docile_ds)
-            if split_name is None:
-                docile_report = {
-                    "status": "skipped_with_reason",
-                    "metric_type": "entity_f1",
-                    "reason": f"No eval split in DocILE keys={list(docile_ds.keys())}",
-                }
-            else:
-                ok, reason = _can_eval_docile_entity(docile_ds, split_name)
-                if not ok:
-                    docile_report = {
-                        "status": "skipped_with_reason",
-                        "metric_type": "entity_f1",
-                        "reason": reason,
-                    }
-                else:
-                    print("[eval] DocILE entity evaluation ...")
-                    docile_report = _evaluate_docile_entity(
-                        model=model,
-                        processor=processor,
-                        docile_ds=docile_ds,
-                        split_name=split_name,
-                        label_list=label_list,
-                        o_label_id=o_label_id,
-                        input_size=input_size,
-                        ocr_backend=backend,
-                        cache_dir=cache_dir,
-                        concept_vectors=concept_vectors,
-                        alpha=alpha,
-                        limit=args.limit,
-                    )
-                    docile_report["split"] = split_name
+            proto_split = rvl_ds["train"]
+            print("[eval] RVL prototype build (no fine-tune) ...")
+            prototypes = _build_rvl_prototypes(
+                model=model,
+                processor=processor,
+                dataset_split=proto_split,
+                input_size=input_size,
+                ocr_backend=backend,
+                train_limit=args.rvl_train_limit,
+            )
+            print("[eval] RVL evaluation ...")
+            rvl_report = _evaluate_rvl(
+                model=model,
+                processor=processor,
+                dataset_split=rvl_ds[split_name],
+                input_size=input_size,
+                ocr_backend=backend,
+                prototypes=prototypes,
+                concept_vectors=concept_vectors,
+                alpha=alpha,
+                limit=args.limit,
+            )
+            rvl_report["split"] = split_name
+
+    print("[eval] CORD setup (OOD) ...")
+    cord_ds, cord_status = _load_cord_dataset(cache_dir)
+    if cord_ds is None:
+        cord_report = {"status": "skipped", "reason": cord_status}
+    else:
+        cord_split = args.cord_split if args.cord_split in cord_ds else list(cord_ds.keys())[0]
+        if "train" not in cord_ds:
+            cord_report = {"status": "skipped", "reason": "No train split in CORD for prototypes"}
+        else:
+            print("[eval] CORD prototype build ...")
+            c_protos = _build_cord_prototypes(
+                model=model,
+                processor=processor,
+                dataset_split=cord_ds["train"],
+                input_size=input_size,
+                ocr_backend=backend,
+                train_limit=args.cord_train_limit,
+            )
+            print("[eval] CORD evaluation ...")
+            cord_report = _evaluate_cord(
+                model=model,
+                processor=processor,
+                dataset_split=cord_ds[cord_split],
+                input_size=input_size,
+                ocr_backend=backend,
+                prototypes=c_protos,
+                concept_vectors=concept_vectors,
+                alpha=alpha,
+                limit=args.limit,
+            )
 
     return {
         "status": "ok",
@@ -1366,7 +1441,7 @@ def _evaluate_all_domains(
         "alpha": float(alpha),
         "funsd_source": funsd_report,
         "rvl_cdip": rvl_report,
-        "docile": docile_report,
+        "cord_v2": cord_report,
         "prep_stats": {
             "funsd": funsd_stats,
             "funsd_status": funsd_status,
@@ -1378,6 +1453,7 @@ def _evaluate_all_domains(
 def _run_eval_baseline(args) -> Dict[str, Any]:
     payload = _evaluate_all_domains(args=args, concept_vectors=None, alpha=0.0)
     payload["mode"] = "baseline"
+    payload = _attach_provenance(payload, args, artifact_name="baseline_eval")
     output_dir = _resolve_path(args.output_dir, DEFAULT_OUTPUT_DIR)
     _json_dump(os.path.join(output_dir, "baseline_eval.json"), payload)
     return payload
@@ -1409,6 +1485,7 @@ def _run_eval_steered(args) -> Dict[str, Any]:
 
     best = max(sweeps, key=_score)
     best["alpha_sweep"] = [{"alpha": s["alpha"], "score": _score(s)} for s in sweeps]
+    best = _attach_provenance(best, args, artifact_name="steered_eval")
 
     _json_dump(os.path.join(output_dir, "steered_eval.json"), best)
     return best
@@ -1448,6 +1525,7 @@ def _run_transfer_matrix(args) -> Dict[str, Any]:
         "baseline": baseline_report,
         "steered": steered_report,
     }
+    payload = _attach_provenance(payload, args, artifact_name="domain_transfer_report")
 
     final_report_path = _resolve_artifact_path(output_dir, args.report_path, "domain_transfer_report.json")
     _json_dump(final_report_path, payload)
@@ -1489,6 +1567,7 @@ def _run_all(args) -> Dict[str, Any]:
             "invariance_report_path": matrix.get("invariance_report_path"),
         },
     }
+    payload = _attach_provenance(payload, args, artifact_name="domain_transfer_report")
     final_report_path = _resolve_artifact_path(output_dir, args.report_path, "domain_transfer_report.json")
     _json_dump(final_report_path, payload)
     return payload
@@ -1504,9 +1583,10 @@ def _add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--checkpoint", type=str, default=DEFAULT_CHECKPOINT, help="Source FUNSD checkpoint")
     p.add_argument("--device", type=str, default="auto", choices=["auto", "mps", "cuda", "cpu"], help="Device")
     p.add_argument("--limit", type=int, default=None, help="Optional document cap for smoke tests")
-    p.add_argument("--docile_enable", type=_str2bool, default=True, help="Enable DocILE phase (skip-aware)")
     p.add_argument("--rvl_split", type=str, default="test", help="RVL split for evaluation")
     p.add_argument("--rvl_train_limit", type=int, default=1500, help="RVL train docs used for prototype build")
+    p.add_argument("--cord_split", type=str, default="test", help="CORD split for evaluation")
+    p.add_argument("--cord_train_limit", type=int, default=500, help="CORD train docs used for prototype build")
     p.add_argument("--download_mode", type=str, default="auto", choices=["auto", "manual"], help="Dataset acquisition mode")
     p.add_argument("--concept_vector_path", type=str, default=None, help="Concept vector .pt path (default: <output_dir>/concept_vectors.pt)")
     p.add_argument("--concept_stats_path", type=str, default=None, help="Concept stats JSON path (default: <output_dir>/concept_vector_stats.json)")
@@ -1521,7 +1601,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_prepare = sub.add_parser("prepare_data", help="Download/validate RVL now and DocILE optional")
+    p_prepare = sub.add_parser("prepare_data", help="Download/validate RVL and FUNSD datasets")
     _add_common_args(p_prepare)
 
     p_extract = sub.add_parser("extract_concepts", help="Extract 4 concept vectors from source-domain hidden states")
@@ -1565,8 +1645,16 @@ def _print_summary(payload: Dict[str, Any]) -> None:
         s_funsd = steer.get("funsd_source", {}).get("overall", {}).get("f1", "n/a")
         b_rvl = base.get("rvl_cdip", {}).get("accuracy", "n/a")
         s_rvl = steer.get("rvl_cdip", {}).get("accuracy", "n/a")
+        b_cord = base.get("cord_v2", {}).get("accuracy", "n/a")
+        s_cord = steer.get("cord_v2", {}).get("accuracy", "n/a")
+
+        b_funsd_token = base.get("funsd_source", {}).get("token_f1", "n/a")
+        s_funsd_token = steer.get("funsd_source", {}).get("token_f1", "n/a")
+
         print(f"FUNSD source entity_f1: baseline={b_funsd} steered={s_funsd}")
+        print(f"FUNSD source token_f1:  baseline={b_funsd_token} steered={s_funsd_token}")
         print(f"RVL accuracy: baseline={b_rvl} steered={s_rvl}")
+        print(f"CORD accuracy: baseline={b_cord} steered={s_cord}")
 
 
 def main() -> None:
@@ -1605,6 +1693,7 @@ def main() -> None:
     output_dir = _resolve_path(args.output_dir, DEFAULT_OUTPUT_DIR)
     report_path = _resolve_artifact_path(output_dir, args.report_path, "domain_transfer_report.json")
     # Always emit a command-level report snapshot at the reported path.
+    payload = _attach_provenance(payload, args, artifact_name="domain_transfer_report")
     _json_dump(report_path, payload)
 
     print(json.dumps({"status": payload.get("status", "unknown"), "report_path": report_path}, indent=2))

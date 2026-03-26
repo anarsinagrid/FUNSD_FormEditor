@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
 import os
 import platform
@@ -42,12 +43,54 @@ from transformers import (
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 
-DEFAULT_CHECKPOINT = os.path.join(SCRIPT_DIR, "layoutlmv3-funsd-doctr", "checkpoint-800")
+DEFAULT_CHECKPOINT = os.path.join(SCRIPT_DIR, "layoutlmv3-funsd", "checkpoint-608")
 DEFAULT_CACHE_DIR = os.getenv("HF_CACHE_DIR") or os.path.join(REPO_ROOT, ".hf_cache")
 DEFAULT_ARTIFACTS_DIR = os.path.join(SCRIPT_DIR, "onnx_artifacts")
+
 DEFAULT_OPSET = 17
 DEFAULT_BUCKET_BOUNDS = [64, 128, 256, 384, 512]
 DEFAULT_QUANT_OP_TYPES = ["MatMul", "Gemm"]
+
+
+def _file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _git_commit_short() -> Optional[str]:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", REPO_ROOT, "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0:
+            value = proc.stdout.strip()
+            return value or None
+    except Exception:
+        return None
+    return None
+
+
+def _attach_provenance(payload: Dict[str, Any], command_name: str) -> Dict[str, Any]:
+    out = dict(payload)
+    out["provenance"] = {
+        "generated_at_utc": datetime.utcnow().isoformat() + "Z",
+        "command": command_name,
+        "script_path": os.path.abspath(__file__),
+        "script_sha256": _file_sha256(os.path.abspath(__file__)),
+        "git_commit_short": _git_commit_short(),
+        "policy": {
+            "quantization": "dynamic_int8_for_now",
+            "funsd_eval_docs": 50,
+            "ocr_inference_default": "doctr",
+        },
+    }
+    return out
 
 
 def _optional_import(module_name: str):
@@ -217,6 +260,7 @@ def _load_model_and_processor(
             "microsoft/layoutlmv3-base",
             apply_ocr=False,
             cache_dir=cache_dir,
+            local_files_only=True,
         )
     except Exception:
         # Offline-safe fallback: build processor from local checkpoint assets.
@@ -658,7 +702,7 @@ def _export_coreml(args) -> Dict[str, Any]:
                 ct.TensorType(name="token_type_ids", shape=(1, target_seq_len), dtype=np.int32),
             ],
             compute_units=ct.ComputeUnit.ALL,
-            compute_precision=ct.precision.FLOAT32,
+            compute_precision=ct.precision.FLOAT16,
             minimum_deployment_target=ct.target.iOS16,
         )
     else:
@@ -673,7 +717,7 @@ def _export_coreml(args) -> Dict[str, Any]:
                 ct.TensorType(name="token_type_ids", shape=(1, target_seq_len), dtype=np.int32),
             ],
             compute_units=ct.ComputeUnit.ALL,
-            compute_precision=ct.precision.FLOAT32,
+            compute_precision=ct.precision.FLOAT16,
             minimum_deployment_target=ct.target.iOS16,
         )
     coreml_model.save(out_path)
@@ -1107,10 +1151,11 @@ def _benchmark(args) -> Dict[str, Any]:
     out = {
         "status": "ok",
         "latency_scope": "model_only",
-        "docs_evaluated": sum(b.sample_count for b in batches),
+        "docs_evaluated": int(torch_res.get("docs", 0)),
         "backends": backends,
         "summary": summary,
     }
+    out = _attach_provenance(out, command_name="benchmark")
     if args.benchmark_json:
         with open(args.benchmark_json, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=2)
@@ -1260,6 +1305,7 @@ def _run_all(args) -> Dict[str, Any]:
         "artifacts_dir": artifacts_dir,
         "steps": {},
     }
+    report = _attach_provenance(report, command_name="run_all")
 
     export_res = _export_onnx(args)
     report["steps"]["export_onnx"] = export_res
@@ -1399,6 +1445,7 @@ def main():
     else:
         raise ValueError(f"Unknown command: {args.command}")
 
+    out = _attach_provenance(out, command_name=args.command)
     print(json.dumps(out, indent=2))
 
 
